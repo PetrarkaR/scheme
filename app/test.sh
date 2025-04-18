@@ -32,8 +32,8 @@ echo "Passed test $test";
   else
 echo "Failed test $test"; fi
 ((test++))
-echo "3.0+3.0"
-if [ "$(./Main "3.0+3.0")" = "Found value" ]; then 
+echo "3.0+3.0i"
+if [ "$(./Main "3.0+3.0i")" = "Found value" ]; then 
 echo "Passed test $test"; 
   else
 echo "Failed test $test"; fi

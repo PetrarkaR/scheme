@@ -1,6 +1,6 @@
-module Main where
+module Evaluator where
 
-import Parser(readExpr)
+import Parser
 import Text.ParserCombinators.Parsec hiding (spaces)
 import System.Environment
 import Data.String (String)
@@ -14,9 +14,9 @@ import Numeric (readOct, readHex, readInt, readFloat)
 import Data.Complex
 
 
-main :: IO ()
-main = do
-    args <- getArgs
-    case args of
-        (expr:_) -> putStrLn (readExpr expr)
-        _ -> putStrLn "No input provided"
+showVal :: LispVal -> String
+showVal (String contents) = "\"" ++ contents ++ "\""
+showVal (Atom name) = name
+showVal (Number contents) = show contents
+showVal (Bool True) = "#t"
+showVal (Bool False) = "#f"
