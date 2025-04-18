@@ -8,8 +8,8 @@ import Text.ParserCombinators.ReadPrec (reset)
 import Control.Monad
 import Data.Char (digitToInt)
 import Data.Either (either)
-import Numeric (readOct, readHex, readInt)
-
+import Numeric (readOct, readHex, readInt, readFloat)
+import Data.Complex
 
 data LispVal = Atom String
             | List [LispVal]
@@ -17,6 +17,9 @@ data LispVal = Atom String
             | String String
             | Number Integer
             | Bool Bool
+            | Float Float
+            | Rational Integer
+            | Complex (Complex LispVal)
 spaces :: Parser ()
 spaces = skipMany space
 parseString :: Parser LispVal
@@ -54,18 +57,33 @@ parseOctalHex = do
     t <- oneOf "xo"
     digits <- many1 hexDigit
     let parsedNum = case t of
-            'o' ->  readOct digits  :: [(Integer, String)]
-            'x' ->  readHex digits  :: [(Integer, String)]
+            'o' ->  fst . head $ readOct digits 
+            'x' ->  fst . head $ readHex digits 
     return $ Number parsedNum
-parseDec :: Parser LispVal
-parseDec = do
+parseInt :: Parser LispVal
+parseInt = do
     x <- many1 digit 
     return $ Number $ read x
-
+parseFloat :: Parser LispVal
+parseFloat = do
+    left <- many digit
+    t <- oneOf ",."
+    right <- many1 digit
+    let str = left ++ [t] ++ right
+    return $ Float (fst . head $ readFloat str)
 parseNumber :: Parser LispVal
-parseNumber = do
-            parseOctalHex <|> parseDec
-
+parseNumber = parseComplex <|>
+            parseFloat <|>
+            parseOctalHex <|>
+            parseInt
+parseComplex:: Parser LispVal
+parseComplex = do
+    sign <- oneOf "+-"
+    imag <- parseInt
+    imaginary <- oneOf "ij"
+    real <- parseInt
+    
+    return $ Complex (real :+ imag)
 
 symbol::Parser Char
 symbol =oneOf "!#$%&|*+-/:<=>?@^_~"
