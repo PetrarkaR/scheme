@@ -1,6 +1,6 @@
 module Main where
 
-import Parser(readExpr)
+import Parser(readExpr,eval)
 import Text.ParserCombinators.Parsec hiding (spaces)
 import System.Environment
 import Data.String (String)
@@ -15,8 +15,4 @@ import Data.Complex
 
 
 main :: IO ()
-main = do
-    args <- getArgs
-    case args of
-        (expr:_) -> putStrLn (readExpr expr)
-        _ -> putStrLn "No input provided"
+main = getArgs >>= print . eval . readExpr . head

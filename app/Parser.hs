@@ -7,10 +7,16 @@ import GHC.Integer (Integer)
 import Data.Bool (Bool (True, False))
 import Text.ParserCombinators.ReadPrec (reset)
 import Control.Monad
-import Data.Char (digitToInt)
+import Data.Char (digitToInt,isLetter)
 import Data.Either (either)
 import Numeric (readOct, readHex, readInt, readFloat)
 import Data.Complex
+import Data.Typeable
+import Control.Monad.Except
+
+
+
+
 data LispVal = Atom String
             | List [LispVal]
             | DottedList [LispVal] LispVal
@@ -89,17 +95,17 @@ parseComplex = do
     let imagVal = case sign of
             '+' -> imagPart
             '-' -> imagPart
-    return $ Complex ( real :  imag)
+    return $ Complex ( real :+  imag)
 parseList :: Parser LispVal
 parseList = liftM List $ sepBy parseExpr spaces1
 
 parseDottedList :: Parser LispVal
 parseDottedList = do
-  headElems <- endBy parseExpr spaces1   -- each head element followed by ≥1 space
-  char '.'
-  spaces1                               -- eat the space after the dot
-  tailElem <- parseExpr
-  return $ DottedList headElems tailElem
+    headElems <- endBy parseExpr spaces1   -- each head element followed by ≥1 space
+    char '.'
+    spaces1                               -- eat the space after the dot
+    tailElem <- parseExpr
+    return $ DottedList headElems tailElem
 
 
 parseQuoted :: Parser LispVal
@@ -125,10 +131,10 @@ parseExpr =  parseAtom
         <|> try parseQuoted
         <|> try listOrDotted
 
-readExpr :: String -> String
+readExpr :: String -> LispVal
 readExpr input = case parse (spaces >> parseExpr) "lisp" input of
-    Left err -> "No match: " ++ show err
-    Right val -> "Found value" ++ " " ++ show val
+    Left err -> String $ "No match: " ++ show err
+    Right val -> val
 
 showVal :: LispVal -> String
 showVal (String contents) = "\"" ++ contents ++ "\""
@@ -140,6 +146,63 @@ showVal (Float f) = show f
 showVal (Complex c) = show (realPart c) ++ "+" ++ show (imagPart c) ++ "i"
 showVal (List contents) = "(" ++ unwordsList contents ++ ")"
 showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . " ++ showVal tail ++ ")"
+
+eval :: LispVal -> LispVal
+eval val@(String _) = val
+eval val@(Number _) = val
+eval val@(Bool _) = val
+eval (List [Atom "quote", val]) = val
+eval (List (Atom func : args)) = apply func $ map eval args
+
+apply :: String -> [LispVal] -> LispVal
+apply func args = maybe (Bool False) ($ args) $ lookup func primitives
+
+primitives :: [(String, [LispVal] -> LispVal)]
+primitives = [("+", numericBinop (+)),
+            ("-", numericBinop (-)),
+            ("*", numericBinop (*)),
+            ("/", numericBinop div),
+            ("mod", numericBinop mod),
+            ("quotient", numericBinop quot),
+            ("remainder", numericBinop rem),
+            ("symbol?", unaryPred  isSymbol),
+            ("string?", unaryPred isString),
+            ("==",      numericBoolBinop (==)),
+            (">",       numericBoolBinop (>)),
+            ("<",       numericBoolBinop (<)),
+            (">=",      numericBoolBinop (>=)),
+            ("<=",      numericBoolBinop (<=))]
+numericBinop :: (Integer->Integer->Integer) -> [LispVal] -> LispVal
+numericBinop op params = Number $ foldl1 op $ map unpackNum params
+
+unpackNum :: LispVal -> Integer
+unpackNum (Number n) = n
+unpackNum _ = 0
+
+unpackNum (List[n]) = unpackNum n
+
+unaryPred :: (LispVal -> Bool) -> [LispVal] -> LispVal
+unaryPred pred [v] = Bool (pred v)
+unaryPred _   args = error $ "Expected 1 argument, got " ++ show (length args)
+
+
+numericBoolBinop :: (Integer->Integer->Bool) ->[LispVal]->LispVal
+numericBoolBinop op [x,y] = Bool $ unpackNum x `op` unpackNum y
+
+isEq :: LispVal -> LispVal -> Bool
+isEq (Number n1) (Number n2)= n1==n2
+
+isSymbol :: LispVal -> Bool
+isSymbol (Atom _) = True
+isSymbol _        = False
+
+isString :: LispVal -> Bool
+isString (String _) = True
+isString _          = False
+
+isNumber :: LispVal -> Bool
+isNumber (Number _) = True
+isNumber _          = False
 
 
 unwordsList :: [LispVal] -> String
