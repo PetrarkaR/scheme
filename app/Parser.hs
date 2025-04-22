@@ -12,10 +12,84 @@ import Data.Either (either)
 import Numeric (readOct, readHex, readInt, readFloat)
 import Data.Complex
 import Data.Typeable
-import Control.Monad.Except
+import System.IO
+import Data.IORef
+import Control.Monad.IO.Class(liftIO)
+
+type Env = IORef [(String, IORef LispVal)]
+
+nullEnv :: IO Env
+nullEnv = newIORef []
+
+isBound :: Env -> String -> IO Bool
+isBound envRef var = readIORef envRef >>= return . maybe False (const True) . lookup var
+
+getVar :: Env -> String -> IO LispVal
+getVar envRef var = do
+  env <- readIORef envRef
+  case lookup var env of
+    Just valueRef -> readIORef valueRef
+    Nothing -> return $ Atom "nil"  -- Or whatever default value makes sense
+
+setVar :: Env -> String -> LispVal -> IO LispVal
+setVar envRef var value = do
+  env <- readIORef envRef
+  case lookup var env of
+    Just valueRef -> do
+      writeIORef valueRef value
+      return value
+    Nothing -> do
+      return $ String "Unbound variable" 
+
+defineVar :: Env -> String -> LispVal ->IO LispVal
+defineVar envRef var value = do
+    alreadyDefined <- liftIO $ isBound envRef var
+    if alreadyDefined
+        then setVar envRef var value >> return value
+        else liftIO $ do
+            valueRef <- newIORef value
+            env <- readIORef envRef
+            writeIORef envRef ((var, valueRef):env)
+            return value
+
+bindVars :: Env -> [(String, LispVal)] -> IO Env
+bindVars envRef bindings = readIORef envRef >>= extendEnv bindings >>= newIORef
+     where extendEnv bindings env = liftM (++ env) (mapM addBinding bindings)
+           addBinding (var, value) = do ref <- newIORef value
+                                        return (var, ref)
 
 
+extractValue :: LispVal-> LispVal
+extractValue val = val
 
+
+flushStr :: String -> IO ()
+flushStr str=putStr str >> hFlush stdout
+
+readPrompt :: String -> IO String
+readPrompt prompt = flushStr prompt >> getLine
+
+evalString :: Env -> String -> IO String
+evalString env expr = do
+  let parsedExpr = readExpr expr      -- Assuming readExpr returns LispVal directly
+  let result = eval env parsedExpr    -- Using your eval :: Env -> LispVal -> LispVal
+  return $ show result
+
+evalAndPrint :: Env -> String -> IO ()
+evalAndPrint env expr =  evalString env expr >>= putStrLn
+
+runOne ::String->IO()
+runOne expr =nullEnv >>= flip evalAndPrint expr
+
+
+until_ :: Monad m => (a -> Bool) -> m a -> (a -> m ()) -> m ()
+until_ pred prompt action = do
+    result <- prompt
+    if pred result
+        then return ()
+        else action result >> until_ pred prompt action
+runRepl :: IO()
+runRepl = nullEnv >>= until_ (== "quit") (readPrompt "input>>> ") . evalAndPrint
 
 data LispVal = Atom String
             | List [LispVal]
@@ -147,12 +221,22 @@ showVal (Complex c) = show (realPart c) ++ "+" ++ show (imagPart c) ++ "i"
 showVal (List contents) = "(" ++ unwordsList contents ++ ")"
 showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . " ++ showVal tail ++ ")"
 
-eval :: LispVal -> LispVal
-eval val@(String _) = val
-eval val@(Number _) = val
-eval val@(Bool _) = val
-eval (List [Atom "quote", val]) = val
-eval (List (Atom func : args)) = apply func $ map eval args
+
+eval :: Env -> LispVal -> LispVal
+eval env val@(String _) =return val
+eval env val@(Number _) = return val
+eval env val@(Bool _) = return val
+eval env(List [Atom "quote", val]) = return val
+eval env (List [Atom "if", pred, conseq, alt]) = 
+            case eval env of
+                Bool False -> eval env alt
+                Bool True  -> eval env conseq
+                _          -> error "Predicate in 'if' must evaluate to a boolean"
+eval env (List [Atom "set!", Atom var, form]) =
+     eval env form >>= setVar env var
+eval env (List [Atom "define", Atom var, form]) =
+     eval env form >>= defineVar env var
+eval env (List (Atom func : args)) = apply func $ map eval args
 
 apply :: String -> [LispVal] -> LispVal
 apply func args = maybe (Bool False) ($ args) $ lookup func primitives
