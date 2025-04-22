@@ -29,7 +29,7 @@ getVar envRef var = do
   env <- readIORef envRef
   case lookup var env of
     Just valueRef -> readIORef valueRef
-    Nothing -> return $ Atom "nil"  -- Or whatever default value makes sense
+    Nothing       -> error $ "Unbound variable: " ++ var
 
 setVar :: Env -> String -> LispVal -> IO LispVal
 setVar envRef var value = do
@@ -71,15 +71,15 @@ readPrompt prompt = flushStr prompt >> getLine
 
 evalString :: Env -> String -> IO String
 evalString env expr = do
-  let parsedExpr = readExpr expr      -- Assuming readExpr returns LispVal directly
-  let result = eval env parsedExpr    -- Using your eval :: Env -> LispVal -> LispVal
+  let parsedExpr = readExpr expr
+  result <- eval env parsedExpr  -- Note the <- instead of let
   return $ show result
 
 evalAndPrint :: Env -> String -> IO ()
 evalAndPrint env expr =  evalString env expr >>= putStrLn
 
 runOne ::String->IO()
-runOne expr =nullEnv >>= flip evalAndPrint expr
+runOne expr = primitiveBindings >>= flip evalAndPrint expr
 
 
 until_ :: Monad m => (a -> Bool) -> m a -> (a -> m ()) -> m ()
@@ -89,7 +89,17 @@ until_ pred prompt action = do
         then return ()
         else action result >> until_ pred prompt action
 runRepl :: IO()
-runRepl = nullEnv >>= until_ (== "quit") (readPrompt "input>>> ") . evalAndPrint
+runRepl = primitiveBindings >>= until_ (== "quit") (readPrompt "input>>> ") . evalAndPrint
+
+makeFunc varargs env params body = return $ Func (map showVal params) varargs body env
+
+--makeNormalFunc = makeFunc Nothing
+makeNormalFunc env params body = makeFunc Nothing env params body
+--makeVarArgs = makeFunc . Just . showVal
+makeVarArgs argName env params body = makeFunc (Just argName) env params body
+
+
+
 
 data LispVal = Atom String
             | List [LispVal]
@@ -100,6 +110,13 @@ data LispVal = Atom String
             | Float Float
             | Rational Integer
             | Complex (Complex LispVal)
+            | PrimitiveFunc ([LispVal] -> LispVal)
+            | Func { params ::[ String], vararg::(Maybe String),
+                    body:: [LispVal],closure ::Env}
+
+
+
+
 
 spaces :: Parser ()
 spaces = skipMany space
@@ -221,25 +238,88 @@ showVal (Complex c) = show (realPart c) ++ "+" ++ show (imagPart c) ++ "i"
 showVal (List contents) = "(" ++ unwordsList contents ++ ")"
 showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . " ++ showVal tail ++ ")"
 
+showVal(PrimitiveFunc _) = "<primitive>"
+showVal(Func {params = args, vararg=varargs, body=body, closure =env})=
+    "(lambda (" ++unwords (map show args) ++ (
+        case varargs of
+            Nothing -> ""
+            Just arg -> " . " ++ arg ++ ") ... )"
+    )
+getAtomName :: LispVal -> String
+getAtomName (Atom name) = name
+getAtomName other = error $ "Expected Atom, got: " ++ show other
 
-eval :: Env -> LispVal -> LispVal
-eval env val@(String _) =return val
+eval :: Env -> LispVal -> IO LispVal
+eval env val@(String _) = return val
 eval env val@(Number _) = return val
 eval env val@(Bool _) = return val
-eval env(List [Atom "quote", val]) = return val
-eval env (List [Atom "if", pred, conseq, alt]) = 
-            case eval env of
-                Bool False -> eval env alt
-                Bool True  -> eval env conseq
-                _          -> error "Predicate in 'if' must evaluate to a boolean"
-eval env (List [Atom "set!", Atom var, form]) =
-     eval env form >>= setVar env var
-eval env (List [Atom "define", Atom var, form]) =
-     eval env form >>= defineVar env var
-eval env (List (Atom func : args)) = apply func $ map eval args
+eval env (List (Atom "define" : List (Atom fname : params) : body)) = do
+  -- Create a function that takes the given params and evaluates the body
+  makeNormalFunc env params body >>= defineVar env fname
+eval env (List [Atom "quote", val]) = return val
+eval env (Atom id) = getVar env id
+eval env (List [Atom "if", pred, conseq, alt]) = do
+  predResult <- eval env pred
+  case predResult of
+    Bool False -> eval env alt
+    Bool True -> eval env conseq
+    _ -> error "Predicate in 'if' must evaluate to a boolean"
+eval env (List [Atom "set!", Atom var, form]) = do
+  result <- eval env form
+  setVar env var result
+eval env (List [Atom "define", Atom var, form]) = do
+  result <- eval env form
+  defineVar env var result
+eval env (List (function : args)) = do
+     func <- eval env function
+     argVals <- mapM (eval env) args
+     apply func argVals
 
-apply :: String -> [LispVal] -> LispVal
-apply func args = maybe (Bool False) ($ args) $ lookup func primitives
+
+
+eval env (List (Atom "lambda" : DottedList params vararg : body)) =
+    case vararg of
+        Atom name -> makeVarArgs name env params body
+        _         -> error "Expected atom as vararg name"
+
+
+eval env (List (Atom "lambda" : vararg@(Atom _) : body)) =
+    case vararg of
+        Atom name -> makeVarArgs name env [] body
+        _         -> error "Expected atom as vararg name"
+
+
+eval env (List (Atom "lambda" : DottedList params varargs : body)) =
+    --makeVarArgs varargs env params body
+    case varargs of 
+        Atom name -> makeVarArgs name env params body
+        _         -> error "oops"
+eval env (List (Atom "lambda" : varargs@(Atom _) : body)) =
+    case varargs of
+    Atom name -> makeVarArgs name env [] body
+    _         -> error "Invalid varargs in lambda shorthand"
+
+--apply :: String -> [LispVal] -> LispVal
+apply :: LispVal -> [LispVal] -> IO LispVal
+apply (PrimitiveFunc func) args = return $ func args
+apply (Func params varargs body closure) args =
+    if num params /= num args && varargs == Nothing
+        then error "Wrong number of arguments"
+        else (liftIO $ bindVars closure $ zip params args) >>=
+            bindVarArgs varargs >>= evalBody
+  where 
+    remainingArgs = drop (length params) args
+    num = toInteger . length
+    evalBody env = liftM last $ mapM (eval env) body
+    bindVarArgs arg env = case arg of
+        Just argName -> liftIO $ bindVars env [(argName, List remainingArgs)]
+        Nothing -> return env
+apply val _ = error $ "Tried to apply non-function: " ++ show val
+
+
+primitiveBindings :: IO Env
+primitiveBindings = nullEnv >>=( flip bindVars $ map makePrimitiveFunc primitives)
+    where makePrimitiveFunc (var,func) = (var,PrimitiveFunc func)
 
 primitives :: [(String, [LispVal] -> LispVal)]
 primitives = [("+", numericBinop (+)),
